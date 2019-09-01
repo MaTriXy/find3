@@ -6,7 +6,45 @@ The command-line scanner provides a means for your laptop your computer to monit
 
 ## Install
 
-There are two ways to install - with Docker, or natively on Linux. If you are using OS X / Windows, I suggest to use Docker. Some of the instructions (namely getting WiFi RSSI values) are specific to the Ubuntu OS.
+There are a couple of ways to install. I recommend downloading the [latest release](https://github.com/schollz/find3-cli-scanner/releases/latest) as that is the easiest way.
+
+### Install natively
+
+First make sure you have [downloaded Go](https://golang.org/dl/).
+
+Then, install the dependencies. 
+
+*Ubuntu Linux*
+
+```
+$ sudo apt-get install wireless-tools net-tools libpcap-dev bluetooth
+```
+
+*Fedora Linux*
+
+```
+$ sudo dnf install golang wireless-tools net-tools libpcap-devel bluez bluez-tools
+```
+
+*OS X*
+
+```
+$ brew install libpcap
+```
+
+Now download and install the scanner with *go get*:
+
+```
+$ go get -u -v github.com/schollz/find3-cli-scanner
+```
+
+If you are on Linux, then you should move it to a path that is available with sudo:
+
+```
+$ sudo mv $GOPATH/bin/find3-cli-scanner /usr/local/bin
+```
+
+That's it! See below for usage.
 
 ### Install with Docker
 
@@ -22,10 +60,10 @@ If *not* using a Raspberry Pi, fetch the latest image.
 $ docker pull schollz/find3-cli-scanner
 ```
 
-If you are using a Raspberry Pi (`armf` arch), you need to build the image yourself.
+If you are using a Raspberry Pi (`armf` arch), you need to build the image yourself, although I suggest Raspberry Pi's just built natively above.
 
 ```
-$ wget https://raw.githubusercontent.com/schollz/find3/master/scanner/Dockerfile
+$ wget https://raw.githubusercontent.com/schollz/find3-cli-scanner/master/Dockerfile
 $ docker build -t schollz/find3-cli-scanner .
 ```
 
@@ -38,10 +76,10 @@ $ docker run --net="host" --privileged --name scanner -d -i -t schollz/find3-cli
 To use the scanner, your syntax will be
 
 ```
-$ docker exec scanner sh -c "find3-cli-scanner ..."
+$ docker exec scanner sh -c "find3-cli-scanner -device DEVICE -family FAMILY -wifi -bluetooth -forever"
 ```
 
-where "`...`" are the flags. Use `-help` to see which flags are available.
+Be sure to use your own device/family name. Use `-help` to see which flags are available.
 
 You can start/stop the image using
 
@@ -56,46 +94,6 @@ $ docker run --net="host" --privileged --name scanning -i -t scanner /bin/bash
 ```
 > 
 
-
-### Install natively
-
-Install the dependencies.
-
-```
-$ sudo apt-get install wireless-tools iw net-tools
-```
-
-(Optional) If you want to do Bluetooth scanning too, then also:
-
-```
-$ sudo apt-get install bluetooth
-```
-
-(Optional) If you want to do Passive scanning, then do:
-
-```
-$ sudo apt-get install tshark
-```
-
-Now, you can  [download the command-line scanner](https://github.com/schollz/find3-cli-scanner/releases/latest).
-
-Or you can build from source. First [install Go](https://golang.org/dl/) and pull the latest:
-
-```
-$ go get -u -v github.com/schollz/find3-cli-scanner
-```
-
-Then you can install it using
-
-```
-$ go install github.com/schollz/find3-cli-scanner
-```
-
-Make sure to move it to a path that is available to root. The root access is needed because of the necessary access to the WiFI card. If your `$GOPATH` is not specified in root, then you can do
-
-```
-$ sudo mv $GOPATH/bin/find3-cli-scanner /usr/local/bin/
-```
 
 ## Usage
 
@@ -167,3 +165,7 @@ If you have issues, please [file a bug report on Github](https://github.com/scho
 ## Source
 
 If you are interested, the app is completely open-source and available at  https://github.com/schollz/find3-cli-scanner.
+
+## LICENSE
+
+MIT

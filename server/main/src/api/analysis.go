@@ -54,57 +54,109 @@ type AnalysisResponse struct {
 }
 
 func AnalyzeSensorData(s models.SensorData) (aidata models.LocationAnalysis, err error) {
+	startAnalyze := time.Now()
+
 	aidata.Guesses = []models.LocationPrediction{}
 	aidata.LocationNames = make(map[string]string)
 
-	// inquire the AI
-	var target AnalysisResponse
-	type ClassifyPayload struct {
-		Sensor     models.SensorData `json:"sensor_data"`
-		DataFolder string            `json:"data_folder"`
+	type a struct {
+		aidata models.LocationAnalysis
+		err    error
 	}
-	var p2 ClassifyPayload
-	p2.Sensor = s
-	p2.DataFolder = DataFolder
-	url := "http://localhost:" + AIPort + "/classify"
-	bPayload, err := json.Marshal(p2)
-	if err != nil {
-		err = errors.Wrap(err, "problem marshaling data")
-		return
-	}
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bPayload))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		err = errors.Wrap(err, "problem posting payload")
-		return
-	}
-	defer resp.Body.Close()
+	aChan := make(chan a)
+	go func(aChan chan a) {
+		// inquire the AI
+		aiTime := time.Now()
+		var target AnalysisResponse
+		type ClassifyPayload struct {
+			Sensor     models.SensorData `json:"sensor_data"`
+			DataFolder string            `json:"data_folder"`
+		}
+		var p2 ClassifyPayload
+		p2.Sensor = s
+		p2.DataFolder = DataFolder
+		url := "http://localhost:" + AIPort + "/classify"
+		bPayload, err := json.Marshal(p2)
+		if err != nil {
+			err = errors.Wrap(err, "problem marshaling data")
+			aChan <- a{err: err}
+			return
+		}
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(bPayload))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			err = errors.Wrap(err, "problem posting payload")
+			aChan <- a{err: err}
+			return
+		}
+		defer resp.Body.Close()
 
-	err = json.NewDecoder(resp.Body).Decode(&target)
-	if err != nil {
-		err = errors.Wrap(err, "problem decoding response")
-		return
-	}
-	if !target.Success {
-		err = errors.New("unable to analyze: " + target.Message)
-		return
-	}
-	if len(target.Data.Predictions) == 0 {
-		err = errors.New("problem analyzing: no predictions")
-		return
-	}
+		err = json.NewDecoder(resp.Body).Decode(&target)
+		if err != nil {
+			err = errors.Wrap(err, "problem decoding response")
+			aChan <- a{err: err}
+			return
+		}
+		if !target.Success {
+			err = errors.New("unable to analyze: " + target.Message)
+			aChan <- a{err: err}
+			return
+		}
+		if len(target.Data.Predictions) == 0 {
+			err = errors.New("problem analyzing: no predictions")
+			aChan <- a{err: err}
+			return
+		}
+		logger.Log.Debugf("[%s] python classified %s", s.Family, time.Since(aiTime))
+		aChan <- a{err: err, aidata: target.Data}
+	}(aChan)
 
-	aidata = target.Data
+	type b struct {
+		pl  nb1.PairList
+		err error
+	}
+	bChan := make(chan b)
+	go func(bChan chan b) {
+		// do naive bayes1 learning
+		nb1Time := time.Now()
+		nb := nb1.New()
+		pl, err := nb.Classify(s)
+		logger.Log.Debugf("[%s] nb1 classified %s", s.Family, time.Since(nb1Time))
+		bChan <- b{pl: pl, err: err}
+	}(bChan)
+
+	// type c struct {
+	// 	pl  nb2.PairList
+	// 	err error
+	// }
+	// cChan := make(chan c)
+	// go func(cChan chan c) {
+	// 	// do naive bayes2 learning
+	// 	nb2Time := time.Now()
+	// 	nbLearned2 := nb2.New()
+	// 	pl, err := nbLearned2.Classify(s)
+	// 	logger.Log.Debugf("[%s] nb2 classified %s", s.Family, time.Since(nb2Time))
+	// 	cChan <- c{pl: pl, err: err}
+	// }(cChan)
+
+	aResult := <-aChan
+	if aResult.err != nil || len(aResult.aidata.Predictions) == 0 {
+		err = errors.Wrap(aResult.err, "problem with machine learnaing")
+		logger.Log.Error(aResult.err)
+		return
+	}
+	aidata = aResult.aidata
 
 	reverseLocationNames := make(map[string]string)
 	for key, value := range aidata.LocationNames {
 		reverseLocationNames[value] = key
 	}
-	// do naive bayes1 learning
-	nb := nb1.New()
-	pl, err := nb.Classify(s)
-	if err == nil {
+
+	// process nb1
+	bResult := <-bChan
+	if bResult.err == nil {
+		pl := bResult.pl
 		algPrediction := models.AlgorithmPrediction{Name: "Extended Naive Bayes1"}
 		algPrediction.Locations = make([]string, len(pl))
 		algPrediction.Probabilities = make([]float64, len(pl))
@@ -114,13 +166,13 @@ func AnalyzeSensorData(s models.SensorData) (aidata models.LocationAnalysis, err
 		}
 		aidata.Predictions = append(aidata.Predictions, algPrediction)
 	} else {
-		logger.Log.Warnf("[%s] nb1 classify: %s", s.Family, err.Error())
+		logger.Log.Warnf("[%s] nb1 classify: %s", s.Family, bResult.err.Error())
 	}
 
-	// // do naive bayes2 learning
-	// nbLearned2 := nb2.New()
-	// pl2, err := nbLearned2.Classify(s)
-	// if err == nil {
+	// // process nb2
+	// cResult := <-cChan
+	// if cResult.err == nil {
+	// 	pl2 := cResult.pl
 	// 	algPrediction := models.AlgorithmPrediction{Name: "Extended Naive Bayes2"}
 	// 	algPrediction.Locations = make([]string, len(pl2))
 	// 	algPrediction.Probabilities = make([]float64, len(pl2))
@@ -130,22 +182,21 @@ func AnalyzeSensorData(s models.SensorData) (aidata models.LocationAnalysis, err
 	// 	}
 	// 	aidata.Predictions = append(aidata.Predictions, algPrediction)
 	// } else {
-	// 	logger.Log.Warnf("[%s] nb2 classify: %s", s.Family, err.Error())
+	// 	logger.Log.Warnf("[%s] nb2 classify: %s", s.Family, cResult.err.Error())
 	// }
 
 	d, err := database.Open(s.Family)
 	if err != nil {
 		return
 	}
-	defer d.Close()
-
 	var algorithmEfficacy map[string]map[string]models.BinaryStats
 	d.Get("AlgorithmEfficacy", &algorithmEfficacy)
+	d.Close()
 	aidata.Guesses = determineBestGuess(aidata, algorithmEfficacy)
 
 	if aidata.IsUnknown {
 		aidata.Guesses = []models.LocationPrediction{
-			models.LocationPrediction{
+			{
 				Location:    "?",
 				Probability: 1,
 			},
@@ -154,7 +205,19 @@ func AnalyzeSensorData(s models.SensorData) (aidata models.LocationAnalysis, err
 
 	// add prediction to the database
 	// adding predictions uses up a lot of space
-	err = d.AddPrediction(s.Timestamp, aidata.Guesses)
+	go func() {
+		d, err := database.Open(s.Family)
+		if err != nil {
+			return
+		}
+		defer d.Close()
+		errInsert := d.AddPrediction(s.Timestamp, aidata.Guesses)
+		if errInsert != nil {
+			logger.Log.Errorf("[%s] problem inserting: %s", s.Family, errInsert.Error())
+		}
+	}()
+
+	logger.Log.Debugf("[%s] analyzed in %s", s.Family, time.Since(startAnalyze))
 	return
 }
 
@@ -199,7 +262,7 @@ func determineBestGuess(aidata models.LocationAnalysis, algorithmEfficacy map[st
 	b = make([]models.LocationPrediction, len(locationScores))
 	for i := range pl {
 		b[i].Location = pl[i].Key
-		b[i].Probability = pl[i].Value
+		b[i].Probability = float64(int(pl[i].Value*100000)) / 100000
 	}
 
 	if len(locationScores) == 1 {
@@ -220,7 +283,7 @@ func (p PairList) Len() int           { return len(p) }
 func (p PairList) Less(i, j int) bool { return p[i].Value < p[j].Value }
 func (p PairList) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
-func GetByLocation(family string, minutesAgoInt int, showRandomized bool, activeMinsThreshold int, minScanners int, minProbability float64) (byLocations []models.ByLocation, err error) {
+func GetByLocation(family string, minutesAgoInt int, showRandomized bool, activeMinsThreshold int, minScanners int, minProbability float64, deviceCounts map[string]int) (byLocations []models.ByLocation, err error) {
 	millisecondsAgo := int64(minutesAgoInt * 60 * 1000)
 
 	d, err := database.Open(family, true)
@@ -228,26 +291,50 @@ func GetByLocation(family string, minutesAgoInt int, showRandomized bool, active
 		return
 	}
 	defer d.Close()
-	sensors, err := d.GetSensorFromGreaterTime(millisecondsAgo)
 
+	startTime := time.Now()
+	sensors, err := d.GetSensorFromGreaterTime(millisecondsAgo)
+	logger.Log.Debugf("[%s] got sensor from greater time %s", family, time.Since(startTime))
+
+	startTime = time.Now()
 	preAnalyzed := make(map[int64][]models.LocationPrediction)
+	devicesToCheckMap := make(map[string]struct{})
 	for _, sensor := range sensors {
 		a, errGet := d.GetPrediction(sensor.Timestamp)
 		if errGet != nil {
 			continue
 		}
 		preAnalyzed[sensor.Timestamp] = a
+		devicesToCheckMap[sensor.Device] = struct{}{}
 	}
-	deviceCounts, err := d.GetDeviceCounts()
-	if err != nil {
-		err = errors.Wrap(err, "problem getting device counts")
-		return
+	logger.Log.Debugf("[%s] got predictions in map %s", family, time.Since(startTime))
+
+	// get list of devices I care about
+	devicesToCheck := make([]string, len(devicesToCheckMap))
+	i := 0
+	for device := range devicesToCheckMap {
+		devicesToCheck[i] = device
+		i++
 	}
-	deviceFirstTime, err := d.GetDeviceFirstTime()
+	logger.Log.Debugf("[%s] found %d devices to check", family, len(devicesToCheck))
+
+	startTime = time.Now()
+	if len(deviceCounts) == 0 {
+		deviceCounts, err = d.GetDeviceCountsFromDevices(devicesToCheck)
+		if err != nil {
+			err = errors.Wrap(err, "could not get devices")
+			return
+		}
+	}
+	logger.Log.Debugf("[%s] got device counts %s", family, time.Since(startTime))
+
+	startTime = time.Now()
+	deviceFirstTime, err := d.GetDeviceFirstTimeFromDevices(devicesToCheck)
 	if err != nil {
 		err = errors.Wrap(err, "problem getting device first time")
 		return
 	}
+	logger.Log.Debugf("[%s] got device first-time %s", family, time.Since(startTime))
 
 	var rollingData models.ReverseRollingData
 	errGotRollingData := d.Get("ReverseRollingData", &rollingData)
@@ -261,11 +348,11 @@ func GetByLocation(family string, minutesAgoInt int, showRandomized bool, active
 			continue
 		}
 		if _, ok := deviceCounts[s.Device]; !ok {
-			logger.Log.Warnf("missing device counts for %s", s.Device)
+			// logger.Log.Warnf("missing device counts for %s", s.Device)
 			continue
 		}
 		if _, ok := deviceFirstTime[s.Device]; !ok {
-			logger.Log.Warnf("missing deviceFirstTime for %s", s.Device)
+			// logger.Log.Warnf("missing deviceFirstTime for %s", s.Device)
 			continue
 		}
 		if errGotRollingData == nil {
@@ -323,8 +410,10 @@ func GetByLocation(family string, minutesAgoInt int, showRandomized bool, active
 	}
 
 	byLocations = make([]models.ByLocation, len(locations))
-	i := 0
+	i = 0
+	gpsData, _ := GetGPSData(family)
 	for location := range locations {
+		byLocations[i].GPS = gpsData[location].GPS
 		byLocations[i].Location = location
 		byLocations[i].Devices = locations[location]
 		byLocations[i].Total = len(locations[location])

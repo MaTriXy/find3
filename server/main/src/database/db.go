@@ -1,13 +1,14 @@
 package database
 
 import (
+	"bufio"
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
 	"time"
@@ -16,8 +17,8 @@ import (
 	"github.com/mr-tron/base58/base58"
 	"github.com/pkg/errors"
 	"github.com/schollz/find3/server/main/src/models"
+	"github.com/schollz/sqlite3dump"
 	"github.com/schollz/stringsizer"
-	flock "github.com/theckman/go-flock"
 )
 
 // MakeTables creates two tables, a `keystore` table:
@@ -76,6 +77,22 @@ func (d *Database) MakeTables() (err error) {
 	}
 
 	sqlStmt = `CREATE TABLE gps (id INTEGER PRIMARY KEY, timestamp INTEGER, mac TEXT, loc TEXT, lat REAL, lon REAL, alt REAL);`
+	_, err = d.db.Exec(sqlStmt)
+	if err != nil {
+		err = errors.Wrap(err, "MakeTables")
+		logger.Log.Error(err)
+		return
+	}
+
+	sqlStmt = `create index devices_name on devices (name);`
+	_, err = d.db.Exec(sqlStmt)
+	if err != nil {
+		err = errors.Wrap(err, "MakeTables")
+		logger.Log.Error(err)
+		return
+	}
+
+	sqlStmt = `CREATE INDEX sensors_devices ON sensors (deviceid);`
 	_, err = d.db.Exec(sqlStmt)
 	if err != nil {
 		err = errors.Wrap(err, "MakeTables")
@@ -159,17 +176,32 @@ func (d *Database) Set(key string, value interface{}) (err error) {
 	return
 }
 
-// Set will set a value in the database, when using it like a keystore.
-func (d *Database) Dump() (err error) {
-	command := fmt.Sprintf("sqlite3 d.name .dump")
-	logger.Log.Debug(command)
-	out, err := exec.Command(command).Output()
-	fmt.Println(out)
+// Dump will output the string version of the database
+func (d *Database) Dump() (dumped string, err error) {
+	var b bytes.Buffer
+	out := bufio.NewWriter(&b)
+	err = sqlite3dump.Dump(d.name, out)
+	if err != nil {
+		return
+	}
+	out.Flush()
+	dumped = string(b.Bytes())
 	return
+}
+
+// GetAllFingerprints returns all the fingerprints
+func (d *Database) GetAllFingerprints() (s []models.SensorData, err error) {
+	return d.GetAllFromQuery("SELECT * FROM sensors ORDER BY timestamp")
 }
 
 // AddPrediction will insert or update a prediction in the database
 func (d *Database) AddPrediction(timestamp int64, aidata []models.LocationPrediction) (err error) {
+	// make sure we have a prediction
+	if len(aidata) == 0 {
+		err = errors.New("no predictions to add")
+		return
+	}
+
 	// truncate to two digits
 	for i := range aidata {
 		aidata[i].Probability = float64(int64(float64(aidata[i].Probability)*100)) / 100
@@ -182,22 +214,22 @@ func (d *Database) AddPrediction(timestamp int64, aidata []models.LocationPredic
 	}
 	tx, err := d.db.Begin()
 	if err != nil {
-		return errors.Wrap(err, "AddPrediction")
+		return errors.Wrap(err, "begin AddPrediction")
 	}
 	stmt, err := tx.Prepare("insert or replace into location_predictions (timestamp,prediction) values (?, ?)")
 	if err != nil {
-		return errors.Wrap(err, "AddPrediction")
+		return errors.Wrap(err, "stmt AddPrediction")
 	}
 	defer stmt.Close()
 
 	_, err = stmt.Exec(timestamp, string(b))
 	if err != nil {
-		return errors.Wrap(err, "AddPrediction")
+		return errors.Wrap(err, "exec AddPrediction")
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return errors.Wrap(err, "AddPrediction")
+		return errors.Wrap(err, "commit AddPrediction")
 	}
 	return
 }
@@ -356,7 +388,7 @@ func (d *Database) GetSensorFromTime(timestamp interface{}) (s models.SensorData
 	return
 }
 
-// Get will retrieve the value associated with a key.
+// GetLastSensorTimestamp gets will retrieve the value associated with a key.
 func (d *Database) GetLastSensorTimestamp() (timestamp int64, err error) {
 	stmt, err := d.db.Prepare("SELECT timestamp FROM sensors ORDER BY timestamp DESC LIMIT 1")
 	if err != nil {
@@ -371,7 +403,7 @@ func (d *Database) GetLastSensorTimestamp() (timestamp int64, err error) {
 	return
 }
 
-// Get will retrieve the value associated with a key.
+// TotalLearnedCount gets will retrieve the value associated with a key.
 func (d *Database) TotalLearnedCount() (count int64, err error) {
 	stmt, err := d.db.Prepare("SELECT count(timestamp) FROM sensors WHERE locationid != ''")
 	if err != nil {
@@ -393,7 +425,8 @@ func (d *Database) GetSensorFromGreaterTime(timeBlockInMilliseconds int64) (sens
 		return
 	}
 	minimumTimestamp := latestTime - timeBlockInMilliseconds
-	sensors, err = d.GetAllFromPreparedQuery("SELECT * FROM (SELECT * FROM sensors WHERE timestamp > ? GROUP BY deviceid ORDER BY timestamp DESC)", minimumTimestamp)
+	logger.Log.Debugf("using minimum timestamp of %d", minimumTimestamp)
+	sensors, err = d.GetAllFromPreparedQuery("SELECT * FROM sensors WHERE timestamp > ? GROUP BY deviceid ORDER BY timestamp DESC", minimumTimestamp)
 	return
 }
 
@@ -411,9 +444,10 @@ func (d *Database) NumDevices() (num int, err error) {
 	return
 }
 
-func (d *Database) GetDeviceFirstTime() (firstTime map[string]time.Time, err error) {
+func (d *Database) GetDeviceFirstTimeFromDevices(devices []string) (firstTime map[string]time.Time, err error) {
 	firstTime = make(map[string]time.Time)
-	query := "select n,t from (select devices.name as n,sensors.timestamp as t from sensors inner join devices on sensors.deviceid=devices.id order by timestamp desc) group by n"
+	query := fmt.Sprintf("select n,t from (select devices.name as n,sensors.timestamp as t from sensors inner join devices on sensors.deviceid=devices.id WHERE devices.name IN ('%s') order by timestamp desc) group by n", strings.Join(devices, "','"))
+
 	stmt, err := d.db.Prepare(query)
 	if err != nil {
 		err = errors.Wrap(err, query)
@@ -435,7 +469,79 @@ func (d *Database) GetDeviceFirstTime() (firstTime map[string]time.Time, err err
 			err = errors.Wrap(err, "scanning")
 			return
 		}
+		// if _, ok := firstTime[name]; !ok {
 		firstTime[name] = time.Unix(0, ts*1000000).UTC()
+		// }
+	}
+	err = rows.Err()
+	if err != nil {
+		err = errors.Wrap(err, "rows")
+	}
+	return
+}
+
+func (d *Database) GetDeviceFirstTime() (firstTime map[string]time.Time, err error) {
+
+	firstTime = make(map[string]time.Time)
+	query := "select n,t from (select devices.name as n,sensors.timestamp as t from sensors inner join devices on sensors.deviceid=devices.id order by timestamp desc) group by n"
+	// query := "select devices.name,sensors.timestamp from sensors inner join devices on sensors.deviceid=devices.id order by timestamp desc"
+	stmt, err := d.db.Prepare(query)
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+	defer stmt.Close()
+	rows, err := stmt.Query()
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		var ts int64
+		err = rows.Scan(&name, &ts)
+		if err != nil {
+			err = errors.Wrap(err, "scanning")
+			return
+		}
+		// if _, ok := firstTime[name]; !ok {
+		firstTime[name] = time.Unix(0, ts*1000000).UTC()
+		// }
+	}
+	err = rows.Err()
+	if err != nil {
+		err = errors.Wrap(err, "rows")
+	}
+	return
+}
+
+func (d *Database) GetDeviceCountsFromDevices(devices []string) (counts map[string]int, err error) {
+	counts = make(map[string]int)
+	query := fmt.Sprintf("select devices.name,count(sensors.timestamp) as num from sensors inner join devices on sensors.deviceid=devices.id WHERE devices.name in ('%s') group by sensors.deviceid", strings.Join(devices, "','"))
+	stmt, err := d.db.Prepare(query)
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+	defer stmt.Close()
+	rows, err := stmt.Query()
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		var count int
+		err = rows.Scan(&name, &count)
+		if err != nil {
+			err = errors.Wrap(err, "scanning")
+			return
+		}
+		counts[name] = count
 	}
 	err = rows.Err()
 	if err != nil {
@@ -520,7 +626,7 @@ func (d *Database) GetAllForClassification() (s []models.SensorData, err error) 
 	return d.GetAllFromQuery("SELECT * FROM sensors WHERE sensors.locationid !='' ORDER BY timestamp")
 }
 
-// GetAllForClassification will return a sensor data for classifying
+// GetAllNotForClassification will return a sensor data for classifying
 func (d *Database) GetAllNotForClassification() (s []models.SensorData, err error) {
 	return d.GetAllFromQuery("SELECT * FROM sensors WHERE sensors.locationid =='' ORDER BY timestamp")
 }
@@ -603,13 +709,14 @@ func (d *Database) GetDevices() (devices []string, err error) {
 	}
 	err = rows.Err()
 	if err != nil {
-		err = errors.Wrap(err, "rows")
+		err = errors.Wrap(err, fmt.Sprintf("problem scanning rows, only got %d devices", len(devices)))
 	}
 	return
 }
 
 func (d *Database) GetLocations() (locations []string, err error) {
-	query := "SELECT name FROM locations"
+	// get only the active locations
+	query := "SELECT locations.name FROM sensors INNER JOIN locations ON sensors.locationid=locations.id GROUP BY locations.name"
 	stmt, err := d.db.Prepare(query)
 	if err != nil {
 		err = errors.Wrap(err, query)
@@ -699,6 +806,22 @@ func GetFamilies() (families []string) {
 	return
 }
 
+func (d *Database) DeleteLocation(locationName string) (err error) {
+	id, err := d.GetID("locations", locationName)
+	if err != nil {
+		return
+	}
+	stmt, err := d.db.Prepare("DELETE FROM sensors WHERE locationid = ?")
+	if err != nil {
+		err = errors.Wrap(err, "problem preparing SQL")
+		return
+
+	}
+	defer stmt.Close()
+	_, err = stmt.Exec(id)
+	return
+}
+
 // GetID will get the ID of an element in a table (devices/locations) and return an error if it doesn't exist
 func (d *Database) GetID(table string, name string) (id string, err error) {
 	// first check to see if it has already been added
@@ -709,6 +832,19 @@ func (d *Database) GetID(table string, name string) (id string, err error) {
 		return
 	}
 	err = stmt.QueryRow(name).Scan(&id)
+	return
+}
+
+// GetName will get the name of an element in a table (devices/locations) and return an error if it doesn't exist
+func (d *Database) GetName(table string, id string) (name string, err error) {
+	// first check to see if it has already been added
+	stmt, err := d.db.Prepare("SELECT name FROM " + table + " WHERE id = ?")
+	defer stmt.Close()
+	if err != nil {
+		err = errors.Wrap(err, "problem preparing SQL")
+		return
+	}
+	err = stmt.QueryRow(id).Scan(&name)
 	return
 }
 
@@ -802,14 +938,19 @@ func Open(family string, readOnly ...bool) (d *Database, err error) {
 
 	// obtain a lock on the database
 	// logger.Log.Debugf("getting filelock on %s", d.name+".lock")
-	d.fileLock = flock.NewFlock(d.name + ".lock")
 	for {
-		locked, err := d.fileLock.TryLock()
-		if err == nil && locked {
+		var ok bool
+		databaseLock.Lock()
+		if _, ok = databaseLock.Locked[d.name]; !ok {
+			databaseLock.Locked[d.name] = true
+		}
+		databaseLock.Unlock()
+		if !ok {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// logger.Log.Debugf("got filelock")
 
 	// check if it is a new database
 	newDatabase := false
@@ -849,20 +990,18 @@ func (d *Database) Close() (err error) {
 	if d.isClosed {
 		return
 	}
-	// close filelock
-	err = d.fileLock.Unlock()
-	if err != nil {
-		logger.Log.Error(err)
-	} else {
-		os.Remove(d.name + ".lock")
-	}
-
 	// close database
 	err2 := d.db.Close()
 	if err2 != nil {
 		err = err2
 		logger.Log.Error(err)
 	}
+
+	// close filelock
+	// logger.Log.Debug("closing lock")
+	databaseLock.Lock()
+	delete(databaseLock.Locked, d.name)
+	databaseLock.Unlock()
 	d.isClosed = true
 	return
 }
@@ -887,6 +1026,7 @@ func (d *Database) GetAllFromQuery(query string) (s []models.SensorData, err err
 // GetAllFromPreparedQuery
 func (d *Database) GetAllFromPreparedQuery(query string, args ...interface{}) (s []models.SensorData, err error) {
 	// prepare statement
+	// startQuery := time.Now()
 	stmt, err := d.db.Prepare(query)
 	if err != nil {
 		err = errors.Wrap(err, query)
@@ -898,22 +1038,27 @@ func (d *Database) GetAllFromPreparedQuery(query string, args ...interface{}) (s
 		err = errors.Wrap(err, query)
 		return
 	}
+	// logger.Log.Debugf("%s: %s", query, time.Since(startQuery))
+	// startQuery = time.Now()
 	defer rows.Close()
 	s, err = d.getRows(rows)
 	if err != nil {
 		err = errors.Wrap(err, query)
 	}
+	// logger.Log.Debugf("getRows %s: %s", query, time.Since(startQuery))
 	return
 }
 
 func (d *Database) getRows(rows *sql.Rows) (s []models.SensorData, err error) {
 	// first get the columns
+	logger.Log.Debug("getting columns")
 	columnList, err := d.Columns()
 	if err != nil {
 		return
 	}
 
 	// get the string sizer for the sensor data
+	logger.Log.Debug("getting sensorstringsizer")
 	var sensorDataStringSizerString string
 	err = d.Get("sensorDataStringSizer", &sensorDataStringSizerString)
 	if err != nil {
@@ -924,15 +1069,18 @@ func (d *Database) getRows(rows *sql.Rows) (s []models.SensorData, err error) {
 		return
 	}
 
-	deviceIDToName, err := d.GetIDToName("devices")
-	if err != nil {
-		return
-	}
+	// logger.Log.Debug("getting devices")
+	// deviceIDToName, err := d.GetIDToName("devices")
+	// if err != nil {
+	// 	return
+	// }
 
+	logger.Log.Debug("getting locations")
 	locationIDToName, err := d.GetIDToName("locations")
 	if err != nil {
 		return
 	}
+	logger.Log.Debug("got locations")
 
 	s = []models.SensorData{}
 	// loop through rows
@@ -946,11 +1094,12 @@ func (d *Database) getRows(rows *sql.Rows) (s []models.SensorData, err error) {
 			err = errors.Wrap(err, "getRows")
 			return
 		}
+		deviceID := string((*arr[1].(*interface{})).([]uint8))
 		s0 := models.SensorData{
 			// the underlying value of the interface pointer and cast it to a pointer interface to cast to a byte to cast to a string
 			Timestamp: int64((*arr[0].(*interface{})).(int64)),
 			Family:    d.family,
-			Device:    deviceIDToName[string((*arr[1].(*interface{})).([]uint8))],
+			Device:    deviceID,
 			Location:  locationIDToName[string((*arr[2].(*interface{})).([]uint8))],
 			Sensors:   make(map[string]map[string]interface{}),
 		}
@@ -973,6 +1122,16 @@ func (d *Database) getRows(rows *sql.Rows) (s []models.SensorData, err error) {
 	err = rows.Err()
 	if err != nil {
 		err = errors.Wrap(err, "getRows")
+	}
+
+	for i := range s {
+		deviceName, errFind := d.GetName("devices", s[i].Device)
+		if errFind != nil {
+			err = errors.Wrap(errFind, "can't get name of "+s[i].Device)
+			logger.Log.Error(err)
+			continue
+		}
+		s[i].Device = deviceName
 	}
 	return
 }
@@ -1001,6 +1160,37 @@ func (d *Database) SetGPS(p models.SensorData) (err error) {
 	err = tx.Commit()
 	if err != nil {
 		return errors.Wrap(err, "SetGPS")
+	}
+	return
+}
+
+// GetAverageGPS will return an average wardrived GPS
+// for a given location
+func (d *Database) GetAverageGPS(location string) (lat float64, lon float64, err error) {
+	query := "SELECT avg(lat),avg(lon) FROM gps WHERE loc == ?"
+	stmt, err := d.db.Prepare(query)
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+	defer stmt.Close()
+	rows, err := stmt.Query(location)
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		err = rows.Scan(&lat, &lon)
+		if err != nil {
+			err = errors.Wrap(err, "scanning")
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		err = errors.Wrap(err, "rows")
 	}
 	return
 }

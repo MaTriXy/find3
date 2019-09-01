@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"time"
@@ -24,8 +25,10 @@ func main() {
 	mqttServer := flag.String("mqtt-server", "", "add MQTT server")
 	mqttAdmin := flag.String("mqtt-admin", "admin", "name for mqtt admin")
 	mqttPass := flag.String("mqtt-pass", "1234", "password for mqtt admin")
+	mqttDir := flag.String("mqtt-dir", "mosquitto_config", "location for mqtt admin")
 	dump := flag.String("dump", "", "family database to dump")
 	memprofile := flag.Bool("memprofile", false, "whether to profile memory")
+	cpuprofile := flag.Bool("cpuprofile", false, "whether to profile cpu")
 	var dataFolder string
 	flag.StringVar(&dataFolder, "data", "", "location to store data")
 
@@ -34,6 +37,10 @@ func main() {
 	if dataFolder == "" {
 		dataFolder, _ = os.Getwd()
 		dataFolder = path.Join(dataFolder, "data")
+	}
+	dataFolder, err := filepath.Abs(dataFolder)
+	if err != nil {
+		panic(err)
 	}
 	os.MkdirAll(dataFolder, 0775)
 
@@ -62,8 +69,10 @@ func main() {
 	} else {
 		mqtt.Server = *mqttServer
 	}
+	mqtt.MosquittoConfigDirectory = *mqttDir
 
 	api.AIPort = *aiPort
+	api.MainPort = *port
 	server.Port = *port
 	server.UseMQTT = mqtt.Server != ""
 
@@ -87,7 +96,25 @@ func main() {
 			}
 		}()
 	}
-	var err error
+
+	if *cpuprofile {
+		cpuprofilepath := path.Join(dataFolder, "cpuprofile")
+		os.MkdirAll(cpuprofilepath, 0755)
+		go func() {
+			log.Println("profiling cpu")
+			f, err := os.Create(path.Join(cpuprofilepath, fmt.Sprintf("%d.cpuprofile", time.Now().UnixNano()/int64(time.Millisecond))))
+			if err != nil {
+				log.Fatal("could not create cpuprofile profile: ", err)
+			}
+			err = pprof.StartCPUProfile(f)
+			if err != nil {
+				log.Fatal("could not create cpuprofile profile: ", err)
+			}
+			time.Sleep(30 * time.Second)
+			pprof.StopCPUProfile()
+			log.Println("finished profiling")
+		}()
+	}
 	if *dump != "" {
 		err = api.Dump(*dump)
 	} else {

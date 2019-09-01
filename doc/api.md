@@ -30,12 +30,80 @@ pong
 &nbsp;
 
 
+> ### Current time {#time}
+> 
+> This is useful for seeing if the server is up.
+> 
+> **Request**
+```
+GET /now
+```
+> 
+> **Response**
+> 
+> This route simply returns the current UTC epoch time in milliseconds.
+>
+```
+1522116478604
+```
+>
+
+
+&nbsp;
+
+
+> ### MQTT setup {#mqtt}
+> 
+> This is the command to setup MQTT on FIND3 for your family. For more information see [the MQTT document](/doc/mqtt.md)
+> 
+> **Request**
+```
+GET /api/v1/mqtt/FAMILY
+```
+> 
+> **Response**
+> 
+> This route returns the passphrase (`XXX`) that you can use to bind to MQTT.
+>
+```
+Added 'FAMILY' for mqtt. Your passphrase is 'XXX'
+```
+>
+
+
+
+&nbsp;
+
+
+> ### Dump database {#dump-database}
+> 
+> This will return the SQL data for the database which can be used to backup the current state of the entire database.
+> 
+> **Request**
+```
+GET /api/v1/database/FAMILY
+```
+> 
+> **Response**
+> 
+> If successful it returns the SQL for the current database. It will return an error message if unsuccesful.
+>
+```
+BEGIN TRANSACTION;
+CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT);
+...
+```
+>
+
+&nbsp;
+
+
 
 > ### Delete all data  {#delete}
 > 
 > **Request**
 ```
-DELETE /api/v1/delete/FAMILY
+DELETE /api/v1/database/FAMILY
 ```
 > 
 > The FAMILY is the name of your family used for your recordings. Making this request will delete all your data, and it is not recoverable.
@@ -49,6 +117,30 @@ DELETE /api/v1/delete/FAMILY
 }
 ```
 >
+
+&nbsp;
+
+
+
+> ### Delete location  {#delete-location}
+> 
+> **Request**
+```
+DELETE /api/v1/location/FAMILY/LOCATION
+```
+> 
+> The FAMILY is the name of your family used for your recordings. Making this request will delete all your data learned for LOCATION, and it is not recoverable.
+> 
+> **Response**
+> 
+```
+{
+    "message": "deleted location 'LOCATION' for FAMILY",
+    "success": true
+}
+```
+>
+
 
 ## General scanning
 
@@ -90,9 +182,10 @@ POST /data
    }
 }
 ```
-
 > 
-> When posting you must include a JSON body that specifies the family name ("`f`"),  the device name ("`d`"), and the current timestamp specified as the Epoch time in milliseconds at UTC ("`t`").
+> When posting you must include a JSON body that specifies the family name ("`f`") and the device name ("`d`").
+>
+> You can include current timestamp specified as the Epoch time in milliseconds at UTC ("`t`"), but this is optional. If it is not included, the server will assign the current time when it is received.
 > 
 > The sensor data ("`s`") is a map where the keys are the type of the data. You can insert *any* type of data, but `wifi` and `bluetooth` are most common. These types of data are keys to a map of all the devices and their signals associated with that signal type.
 >
@@ -100,6 +193,8 @@ POST /data
 >
 > The GPS coordinates are optional. If submitted, they will be saved in a database with the location (if provided) and the sensor data. 
 > 
+> Also, optionally you can add the query parameter `?justsave=1` which will prevent the server from doing any classification on the incoming data.
+>
 > **Response**
 > 
 ```
@@ -145,7 +240,7 @@ POST /passive
 POST /api/v1/settings/passive
 ```
 >
-> There are a few parameters to specify. You must always specify "`family`". When you want to toggle learning on/off you must include "`device`", and if you include "`location`" it will automatically toggle learning.
+> There are a few parameters to specify. You must always specify "`family`". When you want to toggle learning on/off you must include "`device`", and if you include "`location`" it will automatically toggle learning. **Important note**: The `device` you include must be prefixed by the sensor type. For example, if you are using the WiFi for a phone with mac address `xx:yy:zz` then you must name the device `wifi-xx:yy:zz`. If you are using the bluetooth of a device, similarly it must be `bluetooth-xx:yy:zz`.
 >
 > The "`minimum_passive`" will create a threshold that will then only accept fingerprints that are collected with at least that many scanners. So if you have three scanning computers and you want to make sure that any device gets data from all three scanners, you can set it to 3.
 >
@@ -255,6 +350,7 @@ GET /api/v1/efficacy/FAMILY
 }
 ```
 >
+
 
 
 ## Tracking and getting information {#tracking}
@@ -450,6 +546,10 @@ GET /api/v1/by_location/FAMILY
                 }
             ],
             "location": "desk",
+            "gps": {
+                "lat": 47.5675768678,
+                "lon": -122.79879696595,
+            },
             "total": 2
         },
         {
@@ -466,6 +566,10 @@ GET /api/v1/by_location/FAMILY
                 }
             ],
             "location": "kitchen",
+            "gps": {
+                "lat": 47.5675768678,
+                "lon": -122.79879696595,
+            },
             "total": 1
         }
     ],
@@ -474,6 +578,76 @@ GET /api/v1/by_location/FAMILY
 }
 ```
 >>
+
+
+
+&nbsp; 
+
+> ### Get simple location of a single device {#location-basic}
+> **Request**
+```
+GET /api/v1/location_basic/FAMILY/DEVICE
+```
+>
+> **Response**
+> 
+> This is a much simplified response for use with embedded evices. The `data` has the latest location (`loc`) and probability (`p`) for the specified deivce.
+>
+> Additionaly it specifies how long ago the device was last seen at that location, in seconds (`seen`).
+>
+> Example:
+>
+```
+{  
+   "data":{  
+      "loc":"zakhome floor 2 office",
+      "gps": {
+          "lat": 47.5675768678,
+          "lon": -122.79879696595,
+      },
+      "prob":0.97,
+      "seen":1387
+   },
+   "message":"ok",
+   "success":true
+}
+```
+>>
+
+
+## GPS 
+
+> ### Post GPS coordinate information  {#post-gps}
+> 
+> This endpoint is used for specifying the GPS coordinates of learned locations.
+> 
+> **Request**
+```
+POST /api/v1/gps
+```
+```
+{  
+   "f":"FAMILY",
+   "l":"LOCATION",
+   "gps":{
+       "lat":12.1,
+       "lon":10.1,
+       "alt":54
+   }
+}
+```
+> Requires family and a location.
+> 
+> **Response**
+> 
+```
+{
+    "message": "posted data",
+    "success": true
+}
+```
+>
+
 
 ## API requests?
 

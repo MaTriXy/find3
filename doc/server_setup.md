@@ -36,11 +36,13 @@ $ docker build -t schollz/find3 .
 That's it! Now FIND3 should be installed and read to go. To start it, make a directory to store the data, say `/home/$USER/FIND_DATA` and then start the Docker process in the background.
 
 ```bash
-$ docker run -p 11883:1883 -p 8005:8003 \
+$ docker run -p 1884:1883 -p 8005:8003 \
 	-v /home/$USER/FIND_DATA:/data \
     -e MQTT_ADMIN=ADMIN \
     -e MQTT_PASS=PASSWORD \
     -e MQTT_SERVER='localhost:1883' \
+	-e MQTT_EXTERNAL='your public IP' \
+	-e MQTT_PORT=1884 \
 	--name find3server -d -t schollz/find3
 ```
 
@@ -95,12 +97,11 @@ $ ./main -port 8005
 To test that things are working you can submit some test data to the server. Download a test script which will make requests to the server:
 
 ```bash
-$ wget https://raw.githubusercontent.com/schollz/find3/master/server/main/testing/learn.sh
-$ chmod +x learn.sh
-$ ./learn.sh
+$ cd $GOPATH/src/github.com/schollz/find3/server/main/testing
+$ python3 submit_jsons.py http://localhost:8005 testdb.learn.1439597065993.jsons
 ```
 
-You have just submitted about 300 fingerprints for three different locations for the family `testdb` for the device `zack`.
+You have just submitted 343 fingerprints for three different locations for the family `testdb` for the device `zack`.
 
 This test data had `location` associated with it, so you can use it for learning. To do the learning just do 
 

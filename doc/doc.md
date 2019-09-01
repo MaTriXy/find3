@@ -14,16 +14,7 @@ To get started, read the documentation and take a look at the repo. The easiest 
 
 ## Introduction
 
-- The [FIND3 Overview](/doc/overview.md) document provides a high-level
-  introduction to FIND3.
-  It is a good place to start to learn about the motivation for the project
-  and overall design.
-  It also has introductions to many of the other topics explored in more
-  detail in the other documents.
-
-- The [FAQ](/doc/faq.md) answers common questions about FIND3.
-
-- The [Machine learning guide](/doc/overview.md#machine-learning) explains how the machine learning works in FIND3.
+- To start understanding FIND and get basic question answered, see the [FAQ](/doc/faq.md).
 
 ## User guide
 
@@ -63,7 +54,7 @@ mailing lists, user forums, and so on.
 - [The FIND3 project on GitHub](https://github.com/schollz/find3)
 - [Issue tracker](https://github.com/schollz/find3/issues)
 - Official discussion forums / mailing lists:
-  - [Slack channel](https://join.slack.com/t/find3/shared_invite/enQtMzI0MjkwMjc3MDYzLWJiZWEzZjU5NTljM2JlYmE1MDY0NThiYmY2NDYwNGYxNTNmNTJjZjFmNjMwNGMwY2UyNzczNzZhZTIxZWY3ODQ),
+  - [Slack channel](https://join.slack.com/t/find3/shared_invite/enQtMzU4MjY0NjE1NjU0LWRkY2JhNWFkM2U3Y2JhY2RlZTQ5ZTdmZTQ2M2UzMjI2MGVmMjZlOWQyZmU3MzM5YzIzOTM0YmYzYmQ3NTQzNjQ),
     for discussion FIND3 users and developers.
   - [FIND mailing list](http://eepurl.com/bhfFI1),
     a low-traffic list for important announcements about the project;
